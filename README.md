@@ -1,6 +1,6 @@
 # 循环赛积分榜 API
 
-基于 FastAPI 的循环赛（round-robin）积分榜服务。提交参赛队伍与已完赛比分，返回排名及各项统计数据；也可提交未赛对阵的候选比分，枚举所有赛果组合，分析各队跻身前 K 名的出线形势。
+基于 FastAPI 的循环赛（round-robin）服务。提交参赛队伍与已完赛比分，返回排名及各项统计数据；也可提交未赛对阵的候选比分，枚举所有赛果组合，分析各队跻身前 K 名的出线形势；还可提交队伍数、总轮数、各队不可参赛轮次和固定比赛，生成满足主客场均衡与连场限制的单循环赛程。
 
 ## 排名规则
 
@@ -20,6 +20,22 @@
 - 未赛对阵的候选比分为空或含负数
 - `top_k` 小于 1
 - 候选比分组合数超过 100000
+
+## 赛程生成（POST /round-robin-schedules）
+
+提交 2～8 支队伍、总轮数（1～12）、各队不可参赛轮次（可选）和固定比赛（可选），生成**单循环**赛程。
+
+### 约束
+
+- 每对队伍**必须且只比赛一次**；每队每轮至多一场。
+- 总轮数必须介于完成单循环所需的最少轮数（偶数队为 `n-1`，奇数队为 `n`）与 12 之间。
+- 固定比赛（`fixed_matches`）**保留指定轮次和主客关系**。
+- 其余比赛避开每队的不可参赛轮次（`unavailability`）。
+- 每队主场数与客场数之差**不超过 1**。
+- 按轮次顺序查看每队的比赛，**不得连续三场同为主场或同为客场**（轮空会打断连续性）。
+- 每轮比赛按主队 ID、客队 ID 排序；在所有可行赛程中返回**逐轮序列字典序最小**的方案（空轮排在最前），同一请求始终返回相同结果。
+
+`unavailability` 为列表，每项含 `team` 与 `unavailable_rounds`（1 起始的轮次号）。`fixed_matches` 每项含 `home`、`away`、`round`。固定比赛与不可参赛轮次冲突、同轮重复使用同一支队伍、重复对阵或自对阵均返回 `422`；约束无法同时满足（无可行赛程）时也返回 `422` 并说明原因。
 
 ## 启动方式
 
@@ -49,6 +65,7 @@ uvicorn app.main:app --reload
 
 - 积分榜端点：`POST http://localhost:8000/standings`
 - 出线形势端点：`POST http://localhost:8000/qualification-scenarios`
+- 赛程生成端点：`POST http://localhost:8000/round-robin-schedules`
 - Swagger 交互文档：`http://localhost:8000/docs`
 - OpenAPI 规范：`http://localhost:8000/openapi.json`
 
@@ -166,6 +183,50 @@ curl -X POST http://localhost:8000/qualification-scenarios \
 }
 ```
 
+### POST /round-robin-schedules
+
+```bash
+curl -X POST http://localhost:8000/round-robin-schedules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "teams": ["alpha", "bravo", "charlie", "delta"],
+    "rounds": 4,
+    "unavailability": [
+      {"team": "alpha", "unavailable_rounds": [3]}
+    ],
+    "fixed_matches": [
+      {"home": "delta", "away": "alpha", "round": 1}
+    ]
+  }'
+```
+
+响应（每轮按主队、客队 ID 排序，整体为字典序最小的可行赛程）：
+
+```json
+{
+  "teams": ["alpha", "bravo", "charlie", "delta"],
+  "rounds": 4,
+  "schedule": [
+    {"round": 1, "matches": [
+      {"home": "bravo", "away": "charlie"},
+      {"home": "delta", "away": "alpha"}
+    ]},
+    {"round": 2, "matches": [
+      {"home": "alpha", "away": "bravo"}
+    ]},
+    {"round": 3, "matches": [
+      {"home": "charlie", "away": "delta"}
+    ]},
+    {"round": 4, "matches": [
+      {"home": "alpha", "away": "charlie"},
+      {"home": "bravo", "away": "delta"}
+    ]}
+  ]
+}
+```
+
+固定比赛 `delta`（主）对 `alpha`（客）保留在第 1 轮；`alpha` 不在第 3 轮出赛；每队均为 2 主 2 客（或主客差 1），且不存在连续三场同主或同客。
+
 ## 运行测试
 
 ```bash
@@ -181,9 +242,11 @@ app/
   schemas.py     # 请求/响应模型
   standings.py   # 积分榜计算与校验逻辑
   scenarios.py   # 出线形势枚举与名次极值计算
+  scheduling.py  # 单循环赛程生成与可行性回溯
 tests/
   test_standings.py
   test_scenarios.py
+  test_schedules.py
 Dockerfile
 docker-compose.yml
 requirements.txt

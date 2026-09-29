@@ -85,3 +85,61 @@ class QualificationResponse(BaseModel):
     top_k: int
     combinations: int
     scenarios: list[ScenarioEntry]
+
+
+class FixedMatchIn(BaseModel):
+    """A match pinned to a round with a fixed home/away orientation."""
+
+    round: int = Field(ge=1, examples=[1])
+    home: str = Field(min_length=1, examples=["alpha"])
+    away: str = Field(min_length=1, examples=["bravo"])
+
+
+class RoundRobinScheduleRequest(BaseModel):
+    """Teams, total rounds, per-team unavailable rounds and fixed matches."""
+
+    teams: list[str] = Field(
+        min_length=2,
+        max_length=8,
+        examples=[["alpha", "bravo", "charlie", "delta"]],
+    )
+    rounds: int = Field(
+        ge=1,
+        le=12,
+        examples=[3],
+        description=(
+            "Total number of rounds; must be at least the round-robin "
+            "minimum (n-1 for even n, n for odd n) and at most 12."
+        ),
+    )
+    unavailable_rounds: dict[str, list[int]] = Field(
+        default_factory=dict,
+        description=(
+            "Rounds (1-based) in which each team cannot play. Rounds in "
+            "which a team rests are simply left without a match for it."
+        ),
+    )
+    fixed_matches: list[FixedMatchIn] = Field(
+        default_factory=list,
+        description="Matches pinned to a round; their home/away order is kept.",
+    )
+
+
+class ScheduledMatch(BaseModel):
+    """One scheduled fixture (no result yet)."""
+
+    home: str = Field(examples=["alpha"])
+    away: str = Field(examples=["bravo"])
+
+
+class ScheduleRound(BaseModel):
+    """All matches played in one round, sorted by home id then away id."""
+
+    round: int
+    matches: list[ScheduledMatch]
+
+
+class RoundRobinScheduleResponse(BaseModel):
+    teams: list[str]
+    rounds: int
+    schedule: list[ScheduleRound]

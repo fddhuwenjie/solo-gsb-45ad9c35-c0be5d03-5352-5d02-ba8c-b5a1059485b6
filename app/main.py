@@ -4,12 +4,17 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from .scheduling import ScheduleValidationError, generate_schedule
 from .scenarios import compute_scenarios
 from .schemas import (
     MatchIn,
     QualificationRequest,
     QualificationResponse,
+    RoundRobinScheduleRequest,
+    RoundRobinScheduleResponse,
     ScenarioEntry,
+    ScheduledMatch,
+    ScheduleRound,
     StandingEntry,
     StandingsRequest,
     StandingsResponse,
@@ -18,7 +23,7 @@ from .standings import StandingsValidationError, compute_standings
 
 app = FastAPI(
     title="Round-Robin Standings API",
-    version="1.1.0",
+    version="1.2.0",
     description=(
         "Compute a round-robin league table from completed matches. "
         "Win = 3 points, draw = 1. Ties are broken by head-to-head "
@@ -28,7 +33,11 @@ app = FastAPI(
         "POST /qualification-scenarios enumerates the candidate scores "
         "of the remaining fixtures and reports each team's best and "
         "worst reachable rank (guaranteed / possible / eliminated "
-        "against top_k), backed by witnessing result sets."
+        "against top_k), backed by witnessing result sets. "
+        "POST /round-robin-schedules generates a complete single "
+        "round-robin schedule with per-team unavailable rounds, fixed "
+        "matches and home/away balancing; the lexicographically "
+        "smallest feasible schedule is returned."
     ),
 )
 
@@ -36,6 +45,13 @@ app = FastAPI(
 @app.exception_handler(StandingsValidationError)
 async def standings_validation_handler(
     request: Request, exc: StandingsValidationError
+) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.exception_handler(ScheduleValidationError)
+async def schedule_validation_handler(
+    request: Request, exc: ScheduleValidationError
 ) -> JSONResponse:
     return JSONResponse(status_code=422, content={"detail": str(exc)})
 
@@ -117,4 +133,46 @@ def post_qualification_scenarios(
         )
     return QualificationResponse(
         top_k=payload.top_k, combinations=combinations, scenarios=entries
+    )
+
+
+@app.post(
+    "/round-robin-schedules",
+    response_model=RoundRobinScheduleResponse,
+    responses={
+        422: {
+            "description": (
+                "Invalid request, fixed-match conflict or no feasible schedule"
+            )
+        }
+    },
+)
+def post_round_robin_schedule(
+    payload: RoundRobinScheduleRequest,
+) -> RoundRobinScheduleResponse:
+    """Generate the lexicographically smallest feasible round-robin schedule.
+
+    Every pair of teams meets exactly once and no team plays more than
+    once per round. Fixed matches keep their round and home/away order;
+    all other matches avoid the unavailable rounds. Each team's home
+    and away counts differ by at most one and no team plays three
+    consecutive games all home or all away. Rounds are sorted lists of
+    ``(home, away)`` pairs and the schedule with the lexicographically
+    smallest round-by-round sequence is returned.
+    """
+    rounds = generate_schedule(
+        payload.teams,
+        payload.rounds,
+        {team: list(values) for team, values in payload.unavailable_rounds.items()},
+        payload.fixed_matches,
+    )
+    schedule = [
+        ScheduleRound(
+            round=index + 1,
+            matches=[ScheduledMatch(home=home, away=away) for home, away in matches],
+        )
+        for index, matches in enumerate(rounds)
+    ]
+    return RoundRobinScheduleResponse(
+        teams=payload.teams, rounds=payload.rounds, schedule=schedule
     )
